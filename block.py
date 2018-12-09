@@ -1,6 +1,43 @@
 import time
 import hashlib
 
+from ecdsa import SigningKey
+from ecdsa import NIST256p
+from ecdsa import VerifyingKey
+
+# from cryptography.hazmat.primitives import serialization
+# from cryptography.hazmat.primitives.asymmetric import rsa
+# from cryptography.hazmat.backends import default_backend
+
+
+class SshPair:
+
+    def __init__(self):
+        pass
+
+    @staticmethod
+    # TODO: public_exponent and key_size -- fix
+    # TODO: save keys somewhere
+    def get_public_private():
+        # key = rsa.generate_private_key(backend=default_backend(), public_exponent=65537, key_size=2048)
+        #
+        # public_key = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+        #
+        # pem_private_key = key.private_bytes(encoding=serialization.Encoding.PEM,
+        #                                     format=serialization.PrivateFormat.TraditionalOpenSSL,
+        #                                     encryption_algorithm=serialization.NoEncryption())
+        #
+        # return pem_private_key, public_key
+        private_key = SigningKey.generate(curve=NIST256p)
+        public_key = private_key.get_verifying_key()
+
+        return private_key, public_key
+
+    # TODO: verification
+    @staticmethod
+    def verify(private, public):
+        return True
+
 
 class ProofOfWeight:
     pass
@@ -25,10 +62,11 @@ class Block:
 
     def _block_hash(self):
         line = self.prev_hash + str(self.timestamp) + str(self.__nonce) + self.message
-        return Block.__get_hash(line)
+        return Block.get_hash(line)
 
+    # TODO: move from Block class to some static class
     @staticmethod
-    def __get_hash(line):
+    def get_hash(line):
         res = hashlib.sha256()
         res.update(line.encode('utf-8'))
         return res.hexdigest()
@@ -50,7 +88,10 @@ class Block:
 
 class BlockChain:
     # chain = list()
+    # UTOs
+    min_input = 0
     difficulty = 0
+    UTO = dict()
 
     def __init__(self, difficulty=2):
         self.chain = list()
@@ -59,7 +100,7 @@ class BlockChain:
     def add_to_chain(self, block):
         self.chain.append(block)
 
-    # maybe print to json?
+    # TODO: maybe print to json?
     def print_chain(self):
         for block in self.chain:
             print("-------")
@@ -87,12 +128,134 @@ class Wallet:
     # private key
 
     def __init__(self):
-        pass
+        self.__generate_key_pair()
 
     def __generate_key_pair(self):
-        pass
+        self.private_key, self.public_key = SshPair.get_public_private()
+
+    def get_balance(self):
+        res = 0
+        for tx in BlockChain.UTO.items():
+            if tx.my_coin(self.public_key):
+                res += tx.value
+
+        return res
+
+    def create_transaction(self, recipient, value):
+        if self.get_balance() < value:
+            print("Can not send a transaction, not enough money")
+            return False
+
+
+
+class TransactionOutput:
+    # id
+    # recipient
+    # value
+    # parent_transaction_id
+
+    def __init__(self, recipient, value, parent_transaction_id):
+        self.recipient = recipient
+        self.value = value
+        self.parent_transaction_id = parent_transaction_id
+
+        line = recipient.to_string() + str(value) + str(parent_transaction_id)
+        self.id = Block.get_hash(line)
+
+    def my_coin(self, public_key):
+        return public_key == self.recipient
+
+
+class TransactionInput:
+    # output_id
+    # unspent_transaction_output -- UTO
+
+    def __init__(self, output_id):
+        self.output_id = output_id
+        self.UTO = None
+
+
+class Transaction:
+    # id
+    # sender
+    # recipient
+    # signature
+    # value
+
+    # inputs
+    # outputs
+
+    # sequence
+
+    def __init__(self, sender, recipient, value, inputs):
+        self.sender = sender
+        self.recipient = recipient
+        self.value = value
+        self.inputs = inputs
+        self.signature = None
+        self.outputs = list()
+
+        self.sequence = 0
+
+    # TODO: remove get hash from Block class
+    def __calculate_hash(self):
+        self.sequence += 1
+        line = self.sender.decode('utf-8') + \
+            self.recipient.decode('utf-8') + \
+            str(self.value) + str(self.sequence)
+
+        return Block.get_hash(line)
+
+    # TODO: line to self.data but with inputs
+    def generate_signature(self, private_key):
+        line = self.sender.to_pem() + self.recipient.to_pem() + bytearray(self.value)
+        sk = SigningKey.from_string(private_key.to_string(), curve=NIST256p)
+        self.signature = sk.sign(line)
+        return self.signature
+
+    def verify_signature(self, public_key):
+        line = self.sender.to_pem() + self.recipient.to_pem() + bytearray(self.value)
+        vk = VerifyingKey.from_string(public_key.to_string(), curve=NIST256p)
+        return vk.verify(self.signature, line)
+
+    def get_tx_value(self):
+        res = 0
+
+        for tx in self.inputs:
+            if tx.UTO is not None:
+                res += tx.UTO.value
+
+        return res
+
+    def process_transaction(self):
+        if not self.verify_signature(self.sender):
+            print("Verifying transaction failed")
+            return False
+
+        if self.inputs is not None:
+            # check if transaction is not spent
+            for tx in self.inputs:
+                tx.UTO = BlockChain.UTO.get(tx.output_id)
+
+        if self.get_tx_value() < BlockChain.min_input:
+            print("Inputs value is too small")
+            return False
+
+        left = self.get_tx_value() - self.value
+        tx_id = self.__calculate_hash()
+        self.outputs.append(TransactionOutput(self.recipient, self.value, tx_id))
+        self.outputs.append(TransactionOutput(self.sender, left, tx_id))
+
+        for o in self.outputs:
+            BlockChain.UTO[o.id] = o
+
+        for tx in self.inputs:
+            if tx.UTO is not None:
+                BlockChain.UTO.pop(tx.output_id)
+
 
 def main():
+    print("TEST #1")
     # initial block
     block = Block('test', '0')
     chain = BlockChain(4)
@@ -103,6 +266,18 @@ def main():
 
     chain.print_chain()
     print(chain.check_validity())
+
+    print("TEST #2")
+    # wallets testing
+    wallet1 = Wallet()
+    wallet2 = Wallet()
+
+    print(wallet1.public_key, '\n', wallet1.private_key)
+    print(wallet2.public_key, '\n', wallet2.private_key)
+
+    transaction = Transaction(wallet1.public_key, wallet2.public_key, 5, None)
+    transaction.generate_signature(wallet1.private_key)
+    print(transaction.verify_signature(wallet1.public_key))
 
 
 if __name__ == "__main__":
