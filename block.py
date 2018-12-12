@@ -148,15 +148,65 @@ class BlockChain:
     def get_last(self):
         return self.chain[-1]
 
-    def check_validity(self):
-        for i in range(len(self.chain) - 1):
-            if self.chain[i].hash != self.chain[i + 1]. prev_hash:
-                print("Not valid previous hash in block {0}".format(i + 1))
+    # def check_validity(self):
+    #     for i in range(len(self.chain) - 1):
+    #         if self.chain[i].hash != self.chain[i + 1]. prev_hash:
+    #             print("Not valid previous hash in block {0}".format(i + 1))
+    #             return False
+    #
+    #         if self.chain[i + 1].hash != self.chain[i + 1]._block_hash():
+    #             print("Not valid hash in block {0}".format(i + 1))
+    #             return False
+    #
+    #     return True
+
+    def check_validity(self, gen_tx):
+        target = "0"*self.difficulty
+        tmp_UTO = dict()
+        tmp_UTO[gen_tx.outputs[0].id] = gen_tx.outputs[0]
+
+        for i in range(1, len(self.chain)):
+            curr_block = self.chain[i]
+            prev_block = self.chain[i - 1]
+
+            if curr_block.hash != curr_block._block_hash():
+                print("Hash of block is incorrect")
                 return False
 
-            if self.chain[i + 1].hash != self.chain[i + 1]._block_hash():
-                print("Not valid hash in block {0}".format(i + 1))
+            if prev_block.hash != curr_block.prev_hash:
+                print("Previous hash is incorrect")
                 return False
+
+            if curr_block.hash[:self.difficulty] != target:
+                print("A block is not mined")
+                return False
+
+            for tx in curr_block.transactions:
+                if not tx.verify_signature():
+                    print("Transaction with wrong signature")
+                    return tx
+
+                for tx_input in tx.inputs:
+                    if tx_input.output_id not in tmp_UTO:
+                        print("Input transaction is missing")
+                        return False
+
+                    if tx_input.UTO.value != tmp_UTO[tx_input.output_id].value:
+                        print("Invalid input transaction value")
+                        return False
+
+                    tmp_UTO.pop(tx_input.output_id)
+
+                for tx_output in tx.outputs:
+                    tmp_UTO[tx_output.id] = tx_output
+
+                if tx.outputs[0].recipient != tx.recipient:
+                    print("Wrong recipient")
+                    return False
+
+                if tx.outputs[1].recipient != tx.sender:
+                    print("Wrong sender")
+                    return False
 
         return True
 
@@ -252,8 +302,8 @@ class Transaction:
         self.inputs = inputs
         self.signature = None
         self.outputs = list()
-
         self.sequence = 0
+        self.id = self.__calculate_hash()
 
     # TODO: remove get hash from Block class
     def __calculate_hash(self):
@@ -271,9 +321,9 @@ class Transaction:
         self.signature = sk.sign(line)
         return self.signature
 
-    def verify_signature(self, public_key):
+    def verify_signature(self):
         line = self.sender.to_pem() + self.recipient.to_pem() + bytearray(self.value)
-        vk = VerifyingKey.from_string(public_key.to_string(), curve=NIST256p)
+        vk = VerifyingKey.from_string(self.sender.to_string(), curve=NIST256p)
         return vk.verify(self.signature, line)
 
     def get_tx_value(self):
@@ -286,7 +336,7 @@ class Transaction:
         return res
 
     def process_transaction(self):
-        if not self.verify_signature(self.sender):
+        if not self.verify_signature():
             print("Verifying transaction failed")
             return False
 
@@ -315,30 +365,6 @@ class Transaction:
 
 
 def main():
-    # print("TEST #1")
-    # # initial block
-    # block = Block('test', '0')
-    # chain = BlockChain(4)
-    #
-    # chain.add_to_chain(block)
-    # chain.add_to_chain(Block('test1', str(chain.get_last().hash)))
-    # chain.add_to_chain(Block('test2', str(chain.get_last().hash)))
-    #
-    # chain.print_chain()
-    # print(chain.check_validity())
-    #
-    # print("TEST #2")
-    # # wallets testing
-    # wallet1 = Wallet()
-    # wallet2 = Wallet()
-    #
-    # print(wallet1.public_key, '\n', wallet1.private_key)
-    # print(wallet2.public_key, '\n', wallet2.private_key)
-    #
-    # transaction = Transaction(wallet1.public_key, wallet2.public_key, 5, None)
-    # transaction.generate_signature(wallet1.private_key)
-    # print(transaction.verify_signature(wallet1.public_key))
-
     chain = BlockChain()
 
     walletA = Wallet()
@@ -363,6 +389,7 @@ def main():
     print("B balance: ", walletB.get_balance())
     block1 = Block(gen_block.hash)
     block1.add_transaction(walletA.send_money(walletB.public_key, 40))
+    block1.mine_block(chain.difficulty)
     chain.add_to_chain(block1)
     print("A balance: ", walletA.get_balance())
     print("B balance: ", walletB.get_balance())
@@ -371,8 +398,9 @@ def main():
 
     print("A balance: ", walletA.get_balance())
     print("B balance: ", walletB.get_balance())
-    block1 = Block(gen_block.hash)
+    block1 = Block(block1.hash)
     block1.add_transaction(walletA.send_money(walletB.public_key, 400))
+    block1.mine_block(chain.difficulty)
     chain.add_to_chain(block1)
     print("A balance: ", walletA.get_balance())
     print("B balance: ", walletB.get_balance())
@@ -381,11 +409,14 @@ def main():
 
     print("A balance: ", walletA.get_balance())
     print("B balance: ", walletB.get_balance())
-    block2 = Block(gen_block.hash)
+    block2 = Block(block1.hash)
     block2.add_transaction(walletB.send_money(walletA.public_key, 40))
+    block2.mine_block(chain.difficulty)
     chain.add_to_chain(block2)
     print("A balance: ", walletA.get_balance())
     print("B balance: ", walletB.get_balance())
+
+    print(chain.check_validity(gen_tx))
 
 
 if __name__ == "__main__":
