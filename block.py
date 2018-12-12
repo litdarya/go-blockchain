@@ -1,13 +1,20 @@
+import json
 import time
 import hashlib
+from urllib.parse import urlparse
+from textwrap import dedent
 
 from ecdsa import SigningKey
 from ecdsa import NIST256p
 from ecdsa import VerifyingKey
 
-# from cryptography.hazmat.primitives import serialization
-# from cryptography.hazmat.primitives.asymmetric import rsa
-# from cryptography.hazmat.backends import default_backend
+from flask import Flask, jsonify, request
+from uuid import uuid4
+import requests
+
+
+app = Flask(__name__)
+node_identifier = str(uuid4()).replace('-', '')
 
 
 class SshPair:
@@ -19,19 +26,10 @@ class SshPair:
     # TODO: public_exponent and key_size -- fix
     # TODO: save keys somewhere
     def get_public_private():
-        # key = rsa.generate_private_key(backend=default_backend(), public_exponent=65537, key_size=2048)
-        #
-        # public_key = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
-        #
-        # pem_private_key = key.private_bytes(encoding=serialization.Encoding.PEM,
-        #                                     format=serialization.PrivateFormat.TraditionalOpenSSL,
-        #                                     encryption_algorithm=serialization.NoEncryption())
-        #
-        # return pem_private_key, public_key
         private_key = SigningKey.generate(curve=NIST256p)
         public_key = private_key.get_verifying_key()
 
-        return private_key, public_key
+        return private_key, public_key.to_pem().decode('utf-8')
 
     # TODO: verification
     @staticmethod
@@ -60,8 +58,6 @@ class Block:
 
         self.__nonce = 0
         self.hash = self._block_hash()
-
-        # self.mine_block(BlockChain.difficulty)
 
     def _block_hash(self):
         line = self.prev_hash + str(self.timestamp) + str(self.__nonce) + self.merkle_root
@@ -127,12 +123,16 @@ class Block:
 class BlockChain:
     # chain = list()
     # UTOs
+    # nodes
     min_input = 0
     difficulty = 0
     UTO = dict()
 
     def __init__(self, difficulty=2):
         self.chain = list()
+        self.nodes = set()
+        self.waiting_transactions = list()
+
         BlockChain.difficulty = difficulty
 
     def add_to_chain(self, block):
@@ -148,26 +148,44 @@ class BlockChain:
     def get_last(self):
         return self.chain[-1]
 
-    # def check_validity(self):
-    #     for i in range(len(self.chain) - 1):
-    #         if self.chain[i].hash != self.chain[i + 1]. prev_hash:
-    #             print("Not valid previous hash in block {0}".format(i + 1))
-    #             return False
-    #
-    #         if self.chain[i + 1].hash != self.chain[i + 1]._block_hash():
-    #             print("Not valid hash in block {0}".format(i + 1))
-    #             return False
-    #
-    #     return True
+    def register_node(self, address):
+        parsed_url = urlparse(address)
+        self.nodes.add(parsed_url.netloc)
 
-    def check_validity(self, gen_tx):
-        target = "0"*self.difficulty
+    def resolve_conflicts(self):
+        new_chain = None
+        new_UTO = None
+        max_len = len(self.chain)
+
+        for node in self.nodes:
+            response = requests.get(f'http://{node}/chain')
+
+            if response.status_code == 200:
+                tmp_UTO = response.json()['UTO']
+                length = response.json()['length']
+                tmp_chain = response.json()['chain']
+
+                if length > max_len and BlockChain.valid_chain(tmp_chain):
+                    max_len = length
+                    new_chain = tmp_chain
+                    new_UTO = tmp_UTO
+
+        if new_chain is not None:
+            self.chain = new_chain
+            self.UTO = new_UTO
+            return True
+
+        return False
+
+    @staticmethod
+    def check_validity(chain_sample, gen_tx):
+        target = "0"*chain_sample.difficulty
         tmp_UTO = dict()
         tmp_UTO[gen_tx.outputs[0].id] = gen_tx.outputs[0]
 
-        for i in range(1, len(self.chain)):
-            curr_block = self.chain[i]
-            prev_block = self.chain[i - 1]
+        for i in range(1, len(chain_sample.chain)):
+            curr_block = chain_sample.chain[i]
+            prev_block = chain_sample.chain[i - 1]
 
             if curr_block.hash != curr_block._block_hash():
                 print("Hash of block is incorrect")
@@ -177,7 +195,7 @@ class BlockChain:
                 print("Previous hash is incorrect")
                 return False
 
-            if curr_block.hash[:self.difficulty] != target:
+            if curr_block.hash[:chain_sample.difficulty] != target:
                 print("A block is not mined")
                 return False
 
@@ -267,7 +285,7 @@ class TransactionOutput:
         self.value = value
         self.parent_transaction_id = parent_transaction_id
 
-        line = recipient.to_pem().decode('utf-8') + str(value) + str(parent_transaction_id)
+        line = recipient + str(value) + str(parent_transaction_id)
         self.id = Block.get_hash(line)
 
     def my_coin(self, public_key):
@@ -308,22 +326,25 @@ class Transaction:
     # TODO: remove get hash from Block class
     def __calculate_hash(self):
         self.sequence += 1
-        line = self.sender.to_pem().decode('utf-8') + \
-            self.recipient.to_pem().decode('utf-8') + \
+        # line = self.sender.to_pem().decode('utf-8') + \
+        #     self.recipient.to_pem().decode('utf-8') + \
+        #     str(self.value) + str(self.sequence)
+        line = self.sender + self.recipient + \
             str(self.value) + str(self.sequence)
 
         return Block.get_hash(line)
 
     # TODO: line to self.data but with inputs
     def generate_signature(self, private_key):
-        line = self.sender.to_pem() + self.recipient.to_pem() + bytearray(self.value)
+        # line = self.sender.to_pem() + self.recipient.to_pem() + bytearray(self.value)
+        line = (self.sender + self.recipient + str(self.value)).encode()
         sk = SigningKey.from_string(private_key.to_string(), curve=NIST256p)
         self.signature = sk.sign(line)
         return self.signature
 
     def verify_signature(self):
-        line = self.sender.to_pem() + self.recipient.to_pem() + bytearray(self.value)
-        vk = VerifyingKey.from_string(self.sender.to_string(), curve=NIST256p)
+        line = (self.sender + self.recipient + str(self.value)).encode()
+        vk = VerifyingKey.from_pem(self.sender)
         return vk.verify(self.signature, line)
 
     def get_tx_value(self):
@@ -354,8 +375,8 @@ class Transaction:
         self.outputs.append(TransactionOutput(self.recipient, self.value, tx_id))
         self.outputs.append(TransactionOutput(self.sender, left, tx_id))
 
-        for o in self.outputs:
-            BlockChain.UTO[o.id] = o
+        for out_tx in self.outputs:
+            BlockChain.UTO[out_tx.id] = out_tx
 
         for tx in self.inputs:
             if tx.UTO is not None:
@@ -364,8 +385,42 @@ class Transaction:
         return True
 
 
+from flask.json import JSONEncoder
+
+
+class MyJSONEncoder(JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, TransactionOutput):
+            return {
+                'recipient': obj.recipient,
+                'value': obj.value,
+                'parent_transaction_id': obj.parent_transaction_id,
+                'id': obj.id
+            }
+        if isinstance(obj, Block):
+            return {
+                'prev_hash': obj.prev_hash,
+                'timestamp': obj.timestamp,
+                'transactions': obj.transactions,
+                'hash': obj.hash,
+                'nonce': 0
+            }
+        if isinstance(obj, Transaction):
+            return {
+                'sender': obj.sender,
+                'recipient': obj.recipient,
+                'value': obj.value,
+                'inputs': obj.inputs,
+                'signature': str(obj.signature),
+                'outputs': obj.outputs,
+                'sequence': obj.sequence,
+                'id': obj.id,
+            }
+        return super(MyJSONEncoder, self).default(obj)
+
+
 def main():
-    chain = BlockChain()
+    # chain = BlockChain()
 
     walletA = Wallet()
     walletB = Wallet()
@@ -416,8 +471,96 @@ def main():
     print("A balance: ", walletA.get_balance())
     print("B balance: ", walletB.get_balance())
 
-    print(chain.check_validity(gen_tx))
+    print(BlockChain.check_validity(chain, gen_tx))
 
+
+chain = BlockChain()
+user_wallet = Wallet()
+gen_wallet = Wallet()
+gen_tx = None
+
+
+def init():
+    global gen_tx
+    gen_tx = Transaction(gen_wallet.public_key,
+                         user_wallet.public_key, 100, None)
+    gen_tx.generate_signature(gen_wallet.private_key)
+    gen_tx.id = '0'
+    gen_tx.outputs.append(TransactionOutput(gen_tx.recipient, gen_tx.value, gen_tx.id))
+    BlockChain.UTO[gen_tx.outputs[0].id] = gen_tx.outputs[0]
+
+    gen_block = Block('0')
+    gen_block.add_transaction(gen_tx)
+    chain.add_to_chain(gen_block)
+
+
+@app.route('/chain', methods=['GET'])
+def full_chain():
+    response = {
+        'UTO': chain.UTO,
+        'BlockChain': chain.chain,
+        'Length': len(chain.chain),
+    }
+    return jsonify(response), 200
+
+
+@app.route('/balance', methods=['GET'])
+def balance():
+    res = user_wallet.get_balance()
+    line = "Your balance is " + str(res)
+    return line
+
+
+@app.route('/validity', methods=['GET'])
+def verify_chain():
+    if BlockChain.check_validity(gen_tx) is True:
+        return "The chain is valid"
+    return "The chain is corrupted"
+
+
+@app.route('/transactions/new', methods=['POST'])
+def new_transaction():
+    values = request.get_json()
+    required = ['recipient', 'amount']
+
+    if not all(k in values for k in required):
+        return 'Missing values', 400
+
+    tx = user_wallet.send_money(values['recipient'], values['amount'])
+    if tx is None:
+        return "Not enough money"
+
+    chain.waiting_transactions.append(tx)
+
+    response = {'message': f'Transaction will be added to some block'}
+
+    return jsonify(response), 201
+
+
+@app.route('/mine', methods=['GET'])
+def mine():
+    last_block = chain.get_last()
+    new_block = Block(last_block.hash)
+
+    for tx in chain.waiting_transactions:
+        new_block.add_transaction(tx)
+
+    new_block.mine_block(chain.difficulty)
+
+    motive_tx = Transaction(gen_wallet.public_key,
+                            user_wallet.public_key, 1, None)
+    motive_tx.generate_signature(gen_wallet.private_key)
+    motive_tx.outputs.append(TransactionOutput(motive_tx.recipient, motive_tx.value, gen_tx.id))
+    BlockChain.UTO[motive_tx.outputs[0].id] = motive_tx.outputs[0]
+
+    # should be a sort of broadcast
+    chain.add_to_chain(new_block)
+    return "you mined!"
+
+
+app.json_encoder = MyJSONEncoder
 
 if __name__ == "__main__":
-    main()
+    init()
+    app.run(host='0.0.0.0', port=5000)
+    # main()
