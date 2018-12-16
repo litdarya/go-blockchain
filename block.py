@@ -662,9 +662,15 @@ class AsyncTask(threading.Thread):
     def __init__(self, server):
         super().__init__()
         self.server = 'http://' + str(server)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            my_addr = s.getsockname()[0]
+
         self.my_addr = 'http://' + \
-                       socket.gethostbyname(socket.gethostname()) + \
+                       my_addr + \
                        ':'
+
 
     def run(self):
         global port
