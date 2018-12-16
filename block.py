@@ -1,4 +1,5 @@
 import hashlib
+import socket
 import sys
 import threading
 import time
@@ -661,15 +662,17 @@ class AsyncTask(threading.Thread):
     def __init__(self, server):
         super().__init__()
         self.server = 'http://' + str(server)
+        self.my_addr = 'http://' + \
+                       socket.gethostbyname(socket.gethostname()) + \
+                       ':'
 
     def run(self):
         global port
         time.sleep(2)
         query = {
-            'node': 'http://0.0.0.0:' + str(port),
+            'node': self.my_addr + str(port),
             'public_key': user_wallet.public_key,
         }
-        print(self.server)
         requests.post(self.server + '/new', json=query)
 
 
