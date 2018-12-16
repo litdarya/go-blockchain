@@ -1,10 +1,13 @@
 import json
+import socket
 import threading
 import time
 import hashlib
 from urllib.parse import urlparse
 # import grequests
 from flask.json import JSONEncoder
+from flask_script import Manager, Server
+
 # from flask.json import JSONDecoder
 
 from ecdsa import SigningKey
@@ -696,8 +699,24 @@ def register_nodes():
     return jsonify(response), 201
 
 
+@app.route('/node/unregister', methods=['POST'])
+def register_nodes():
+    values = request.get_json()
+
+    node = values.get('node')
+    if node is None:
+        return "Error: Please supply a valid list of nodes", 400
+
+    chain.chain.remove(node)
+
+    response = {
+        'message': 'The node has been removed',
+        'removed_node': node,
+    }
+    return jsonify(response), 201
+
+
 app.json_encoder = MyJSONEncoder
-# app.json_decoder = MyJSONDecoder
 
 
 @app.route('/nodes/resolve', methods=['GET'])
@@ -721,32 +740,40 @@ def consensus():
 class AsyncGitTask(threading.Thread):
     def __init__(self):
         super().__init__()
-        # self.task_id = task_id
-        # self.params = params
 
     def run(self):
+        global port
+        time.sleep(2)
         query = {
-            'node': 'http://0.0.0.0:5003',
+            'node': 'http://0.0.0.0:' + str(port),
+            'public_key': user_wallet.public_key,
         }
-        # req = grequests.post(f'http://0.0.0.0:5000/new', json=query)
-        req = requests.post(f'http://0.0.0.0:5000/new', json=query)
-        print(req.status_code)
+        addr = 'http://0.0.0.0:5000/new'
+        requests.post(addr, json=query)
 
 
 def register_myself():
-    app.run(host='0.0.0.0', port=5003)
-    query = {
-        'node': 'http://0.0.0.0:5003',
-    }
-    # req = grequests.post(f'http://0.0.0.0:5000/new', json=query)
-    # req = requests.post(f'http://0.0.0.0:5000/new', json=query)
-    # grequests.imap([req])
     async_task = AsyncGitTask()
     async_task.run()
+
+
+port = 5000
+
+
+def start_app():
+    global port
+    while True:
+        try:
+            app.run(debug=True, use_reloader=False, host='0.0.0.0', port=port)
+        except OSError:
+            pass
+        port += 5
 
 
 if __name__ == "__main__":
     print(node_identifier)
     init()
-    register_myself()
-    # main()
+    # threading.Thread(target=app.run, args={'host': '0.0.0.0', 'port': '5003'}).start()
+    threading.Thread(target=start_app).start()
+    threading.Thread(target=register_myself).start()
+

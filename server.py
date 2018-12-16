@@ -25,11 +25,6 @@ def broadcast_new(new_node):
             'node': new_node,
         }
         response = requests.post(f'http://{addr}/node/register', query)
-        i = 0
-
-        while response != 200 and i < 10:
-            response = requests.post(f'http://{addr}/node/register', query)
-            i += 1
 
         if response != 200:
             broadcast_delete(addr)
@@ -39,22 +34,19 @@ def broadcast_new(new_node):
 def new_node():
     values = request.get_json()
     node = values.get('node')
+    public_key = values.get('public_key')
 
-    if node is None:
+    if node is None or public_key is None:
         return "Error: Please supply a valid node addr", 400
+
     parsed_url = urlparse(node)
-    print(parsed_url)
-    print(parsed_url.netloc)
-    response = requests.get(f'http://{parsed_url.netloc}/whoami')
-    print(response.status_code)
-    if response.status_code == 200:
-        broadcast_new(parsed_url.netloc)
-        local_nodes[parsed_url] = response.json()['public_key']
-        response = {
-            'message': 'OK',
-        }
-        return jsonify(response), 201
-    return None, 400
+    broadcast_new(parsed_url.netloc)
+
+    local_nodes[parsed_url.netloc] = public_key
+    response = {
+        'message': 'registered',
+    }
+    return jsonify(response), 201
 
 
 @app.route('/exit', methods=['POST'])
@@ -81,10 +73,7 @@ def get_logs():
 
 @app.route('/getall', methods=['GET'])
 def all_users():
-    response = dict()
-    for addr, pub in local_nodes:
-        response[addr] = pub
-    return response, 200
+    return jsonify(local_nodes), 200
 
 
 if __name__ == "__main__":
