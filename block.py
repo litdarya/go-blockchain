@@ -3,9 +3,9 @@ import threading
 import time
 import hashlib
 from urllib.parse import urlparse
-import grequests
+# import grequests
 from flask.json import JSONEncoder
-from flask.json import JSONDecoder
+# from flask.json import JSONDecoder
 
 from ecdsa import SigningKey
 from ecdsa import NIST256p
@@ -726,15 +726,17 @@ class AsyncGitTask(threading.Thread):
 
     def run(self):
         query = {
-            'node': 'http://0.0.0.0:5001',
+            'node': 'http://0.0.0.0:5003',
         }
         # req = grequests.post(f'http://0.0.0.0:5000/new', json=query)
         req = requests.post(f'http://0.0.0.0:5000/new', json=query)
+        print(req.status_code)
 
 
 def register_myself():
+    app.run(host='0.0.0.0', port=5003)
     query = {
-        'node': 'http://0.0.0.0:5001',
+        'node': 'http://0.0.0.0:5003',
     }
     # req = grequests.post(f'http://0.0.0.0:5000/new', json=query)
     # req = requests.post(f'http://0.0.0.0:5000/new', json=query)
@@ -747,5 +749,4 @@ if __name__ == "__main__":
     print(node_identifier)
     init()
     register_myself()
-    app.run(host='0.0.0.0', port=5001)
     # main()

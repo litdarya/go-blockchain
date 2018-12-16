@@ -11,7 +11,7 @@ local_nodes = dict()
 
 
 def broadcast_delete(broken_node):
-    for addr in local_nodes.keys():
+    for addr in local_nodes:
         query = {
             'node': broken_node,
         }
@@ -44,13 +44,12 @@ def new_node():
         return "Error: Please supply a valid node addr", 400
     parsed_url = urlparse(node)
     print(parsed_url)
-    # print(parsed_url.netloc)
-    # response = requests.get(f'http://{parsed_url.netloc}/whoami')
-
-    # if response.status_code == 200:
-    if True:
+    print(parsed_url.netloc)
+    response = requests.get(f'http://{parsed_url.netloc}/whoami')
+    print(response.status_code)
+    if response.status_code == 200:
         broadcast_new(parsed_url.netloc)
-        # addrs[parsed_url] = response.json()['public_key']
+        local_nodes[parsed_url] = response.json()['public_key']
         response = {
             'message': 'OK',
         }
