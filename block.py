@@ -1,24 +1,18 @@
-import json
-import socket
+import hashlib
+import sys
 import threading
 import time
-import hashlib
 from urllib.parse import urlparse
-# import grequests
-from flask.json import JSONEncoder
-from flask_script import Manager, Server
-
-# from flask.json import JSONDecoder
-
-from ecdsa import SigningKey
-from ecdsa import NIST256p
-from ecdsa import VerifyingKey
-
-from flask import Flask, jsonify, request
 from uuid import uuid4
-import requests
 
-# import deserializer
+import requests
+from ecdsa import NIST256p
+from ecdsa import SigningKey
+from ecdsa import VerifyingKey
+from flask import Flask, jsonify, request
+from flask.json import JSONEncoder
+from optparse import OptionParser
+
 
 app = Flask(__name__)
 node_identifier = str(uuid4()).replace('-', '')
@@ -108,10 +102,6 @@ class SshPair:
     @staticmethod
     def verify(private, public):
         return True
-
-
-class ProofOfWeight:
-    pass
 
 
 class Block:
@@ -508,76 +498,6 @@ class MyJSONEncoder(JSONEncoder):
             }
         return super(MyJSONEncoder, self).default(obj)
 
-#
-# class MyJSONDecoder(JSONDecoder):
-#     def __init__(self, *args, **kwargs):
-#         self.orig_obj_hook = kwargs.pop("object_hook", None)
-#         super(MyJSONDecoder, self).__init__(*args,
-#                                           object_hook=self.custom_obj_hook, **kwargs)
-#
-#     def custom_obj_hook(self, dct):
-#         # Calling custom decode function:
-#         # dct = HelperFunctions.jsonDecodeHandler(dct)
-#         print(dct)
-#         if self.orig_obj_hook:  # Do we have another hook to call?
-#             return self.orig_obj_hook(dct)  # Yes: then do it
-#         return dct  # No: just return the decoded dict
-
-
-def main():
-    # chain = BlockChain()
-
-    walletA = Wallet()
-    walletB = Wallet()
-    gen_wallet = Wallet()
-
-    print('Creating genesis transaction')
-    gen_tx = Transaction(gen_wallet.public_key, walletA.public_key, 100, None)
-    gen_tx.generate_signature(gen_wallet.private_key)
-    gen_tx.id = '0'
-    gen_tx.outputs.append(TransactionOutput(gen_tx.recipient, gen_tx.value, gen_tx.id))
-    BlockChain.UTO[gen_tx.outputs[0].id] = gen_tx.outputs[0]
-
-    print('Creating genesis block')
-    gen_block = Block('0')
-    gen_block.add_transaction(gen_tx)
-    chain.add_to_chain(gen_block)
-
-    print("TEST #1")
-
-    print("A balance: ", walletA.get_balance())
-    print("B balance: ", walletB.get_balance())
-    block1 = Block(gen_block.hash)
-    block1.add_transaction(walletA.send_money(walletB.public_key, 40))
-    block1.mine_block(chain.difficulty)
-    chain.add_to_chain(block1)
-    print("A balance: ", walletA.get_balance())
-    print("B balance: ", walletB.get_balance())
-
-    print("TEST #2")
-
-    print("A balance: ", walletA.get_balance())
-    print("B balance: ", walletB.get_balance())
-    block1 = Block(block1.hash)
-    block1.add_transaction(walletA.send_money(walletB.public_key, 400))
-    block1.mine_block(chain.difficulty)
-    chain.add_to_chain(block1)
-    print("A balance: ", walletA.get_balance())
-    print("B balance: ", walletB.get_balance())
-
-    print("TEST #3")
-
-    print("A balance: ", walletA.get_balance())
-    print("B balance: ", walletB.get_balance())
-    block2 = Block(block1.hash)
-    block2.add_transaction(walletB.send_money(walletA.public_key, 40))
-    block2.mine_block(chain.difficulty)
-    chain.add_to_chain(block2)
-    print("A balance: ", walletA.get_balance())
-    print("B balance: ", walletB.get_balance())
-
-    print(BlockChain.check_validity(chain))
-
 
 user_wallet = Wallet()
 gen_wallet = Wallet()
@@ -700,7 +620,7 @@ def register_nodes():
 
 
 @app.route('/node/unregister', methods=['POST'])
-def register_nodes():
+def unregister_nodes():
     values = request.get_json()
 
     node = values.get('node')
@@ -737,9 +657,10 @@ def consensus():
     return jsonify(response), 200
 
 
-class AsyncGitTask(threading.Thread):
-    def __init__(self):
+class AsyncTask(threading.Thread):
+    def __init__(self, server):
         super().__init__()
+        self.server = 'http://' + str(server)
 
     def run(self):
         global port
@@ -748,16 +669,16 @@ class AsyncGitTask(threading.Thread):
             'node': 'http://0.0.0.0:' + str(port),
             'public_key': user_wallet.public_key,
         }
-        addr = 'http://0.0.0.0:5000/new'
-        requests.post(addr, json=query)
+        print(self.server)
+        requests.post(self.server + '/new', json=query)
 
 
-def register_myself():
-    async_task = AsyncGitTask()
+def register_myself(server):
+    async_task = AsyncTask(server)
     async_task.run()
 
 
-port = 5000
+port = 5001
 
 
 def start_app():
@@ -771,9 +692,13 @@ def start_app():
 
 
 if __name__ == "__main__":
-    print(node_identifier)
+    parser = OptionParser()
+    parser.add_option("-s", "--server", help="server address", dest='server')
+    options, args = parser.parse_args()
+    if options.server is None:
+        print('Not enough args')
+    server_addr = options.server
     init()
-    # threading.Thread(target=app.run, args={'host': '0.0.0.0', 'port': '5003'}).start()
     threading.Thread(target=start_app).start()
-    threading.Thread(target=register_myself).start()
+    threading.Thread(target=register_myself, args=(server_addr,)).start()
 
