@@ -612,12 +612,7 @@ def register_nodes():
         return "Error: Please supply a valid list of nodes", 400
 
     chain.register_node(node)
-
-    response = {
-        'message': 'New nodes have been added',
-        'total_nodes': list(chain.nodes),
-    }
-    return jsonify(response), 201
+    return "ok", 200
 
 
 @app.route('/node/unregister', methods=['POST'])
@@ -634,7 +629,7 @@ def unregister_nodes():
         'message': 'The node has been removed',
         'removed_node': node,
     }
-    return jsonify(response), 201
+    return jsonify(response), 200
 
 
 app.json_encoder = MyJSONEncoder
@@ -670,7 +665,6 @@ class AsyncTask(threading.Thread):
         self.my_addr = 'http://' + \
                        my_addr + \
                        ':'
-
 
     def run(self):
         global port
