@@ -1,4 +1,5 @@
 import hashlib
+import json
 import socket
 import threading
 import time
@@ -12,6 +13,8 @@ from ecdsa import VerifyingKey
 from flask import Flask, jsonify, request
 from flask.json import JSONEncoder
 from optparse import OptionParser
+
+import os.path
 
 
 app = Flask(__name__)
@@ -99,7 +102,7 @@ class Deserializer:
     def parse_coinbase(tx):
         if tx is None:
             return None
-        
+
         res = CoinbaseTransaction(tx['recipient'], tx['value'], tx['block_hash'])
         res.output = Deserializer.parse_transaction_output(tx['output'])
         res.sequence = tx['sequence']
@@ -134,13 +137,11 @@ class Deserializer:
 
     @staticmethod
     def parse_transaction_input(tx):
-        # outputs = list()
         res = TransactionInput(tx['output_id'])
 
         if tx['UTO'] is None:
             return res
 
-        # outputs.append(Deserializer.parse_transaction_output(tx['UTO']))
         res.UTO = Deserializer.parse_transaction_output(tx['UTO'])
         return res
 
@@ -151,18 +152,11 @@ class SshPair:
         pass
 
     @staticmethod
-    # TODO: public_exponent and key_size -- fix
-    # TODO: save keys somewhere
     def get_public_private():
         private_key = SigningKey.generate(curve=NIST256p)
         public_key = private_key.get_verifying_key()
 
-        return private_key, public_key.to_pem().decode('utf-8')
-
-    # TODO: verification
-    @staticmethod
-    def verify(private, public):
-        return True
+        return private_key.to_pem().decode('utf-8'), public_key.to_pem().decode('utf-8')
 
 
 class Block:
@@ -274,46 +268,64 @@ class BlockChain:
         parsed_url = urlparse(address)
         self.nodes.append(parsed_url.path)
 
-    def resolve_conflicts(self):
+    def resolve_conflicts(self, nodes):
         new_chain = None
         new_UTO = None
+        new_waiting = None
         max_len = len(self.chain)
 
-        for node in self.nodes:
-            response = requests.get(f'http://{node}/chain')
-
-            if response.status_code == 200:
-                length = response.json()['Length']
-                tmp_gen_tx = response.json()['gen_tx']
-                tmp_chain_json = response.json()['BlockChain']
-                tmp_chain = Deserializer.parse_chain(tmp_chain_json)
-
-                if len(tmp_chain) == 0:
-                    continue
-
-                tmp_UTO_json = response.json()['UTO']
-                tmp_UTO = dict()
-
-                for tx in tmp_UTO_json.items():
-                    tmp_UTO[tx[0]] = Deserializer.parse_transaction_output(tx[1])
-
-                possible_chain = self
-                possible_chain.chain = tmp_chain
-                possible_chain.UTO = tmp_UTO
-                if tmp_gen_tx is not None:
-                    possible_chain.gen_tx = Deserializer.parse_transactions(tmp_gen_tx)
-
-                if length > max_len and BlockChain.check_validity(possible_chain):
-                    max_len = length
-                    new_chain = tmp_chain
-                    new_UTO = tmp_UTO
+        for node in nodes:
+            max_len, new_chain, new_UTO, new_waiting = self.resolve(max_len, new_chain,
+                                                                    new_UTO, new_waiting, node)
 
         if new_chain is not None:
             self.chain = new_chain
+            self.waiting_transactions = new_waiting
             BlockChain.UTO = new_UTO
             return True
 
         return False
+
+    def resolve(self, max_len, new_chain, new_UTO, new_waiting, node):
+        response = requests.get(f'http://{node}/chain')
+
+        if response.status_code == 200:
+            length = response.json()['Length']
+            tmp_gen_tx = response.json()['gen_tx']
+            tmp_chain_json = response.json()['BlockChain']
+            tmp_chain = Deserializer.parse_chain(tmp_chain_json)
+            tmp_waiting_json = response.json()['Waiting']
+
+            if len(tmp_chain) == 0:
+                return max_len, new_chain, new_UTO, new_waiting
+
+            tmp_waiting = list()
+            for tx in tmp_waiting_json:
+                tmp_waiting.append(Deserializer.parse_transactions(tx))
+
+            tmp_UTO_json = response.json()['UTO']
+            tmp_UTO = dict()
+
+            for tx in tmp_UTO_json.items():
+                tmp_UTO[tx[0]] = Deserializer.parse_transaction_output(tx[1])
+
+            possible_chain = self
+            possible_chain.chain = tmp_chain
+            possible_chain.UTO = tmp_UTO
+            possible_chain.waiting_transactions = tmp_waiting
+
+            if tmp_gen_tx is not None:
+                possible_chain.gen_tx = Deserializer.parse_transactions(tmp_gen_tx)
+
+            if length > max_len:
+                check, tmp_waiting = BlockChain.check_validity(possible_chain)
+                if check:
+                    max_len = length
+                    new_chain = tmp_chain
+                    new_UTO = tmp_UTO
+                    new_waiting = tmp_waiting
+
+        return max_len, new_chain, new_UTO, new_waiting
 
     @staticmethod
     def check_validity(chain_sample):
@@ -322,29 +334,35 @@ class BlockChain:
         tmp_UTO[chain_sample.gen_tx.outputs[0].id] = \
             chain_sample.gen_tx.outputs[0]
 
+        tmp_waiting = list(set(chain.waiting_transactions)
+                           | set(chain_sample.waiting_transactions))
+
         for i in range(1, len(chain_sample.chain)):
             curr_block = chain_sample.chain[i]
             prev_block = chain_sample.chain[i - 1]
 
             if curr_block.hash != curr_block._block_hash():
                 print("Hash of block is incorrect", curr_block.hash)
-                return False
+                return False, None
 
             if prev_block.hash != curr_block.prev_hash:
                 print("Previous hash is incorrect")
-                return False
+                return False, None
 
             if curr_block.hash[:chain_sample.difficulty] != target:
                 print("A block is not mined")
-                return False
+                return False, None
 
             if curr_block.coinbase_tx.block_hash != curr_block.hash:
                 print("Wrong coinbase")
-                return False
+                return False, None
 
             tmp_UTO[curr_block.coinbase_tx.output.id] = curr_block.coinbase_tx.output
 
             for tx in curr_block.transactions:
+                if tx in tmp_waiting:
+                    tmp_waiting.remove(tx)
+
                 if not tx.verify_signature():
                     print("Transaction with wrong signature")
                     return tx
@@ -352,11 +370,11 @@ class BlockChain:
                 for tx_input in tx.inputs:
                     if tx_input.output_id not in tmp_UTO:
                         print("Input transaction is missing ", tx_input.output_id)
-                        return False
-                    print(tx_input.output_id)
+                        return False, None
+
                     if tx_input.UTO.value != tmp_UTO[tx_input.output_id].value:
                         print("Invalid input transaction value")
-                        return False
+                        return False, None
                     tmp_UTO.pop(tx_input.output_id)
 
                 for tx_output in tx.outputs:
@@ -364,13 +382,13 @@ class BlockChain:
 
                 if tx.outputs[0].recipient != tx.recipient:
                     print("Wrong recipient")
-                    return False
+                    return False, None
 
                 if tx.outputs[1].recipient != tx.sender:
                     print("Wrong sender")
-                    return False
+                    return False, None
 
-        return True
+        return True, tmp_waiting
 
 
 class Wallet:
@@ -383,7 +401,22 @@ class Wallet:
         self.UTO = dict()
 
     def __generate_key_pair(self):
+        if os.path.isfile('id_rsa') and os.path.isfile('id_rsa.pub'):
+            with open("id_rsa", "r") as f:
+                self.private_key = f.read()
+
+            with open("id_rsa.pub", "r") as f:
+                self.public_key = f.read()
+
+            return
+
         self.private_key, self.public_key = SshPair.get_public_private()
+
+        with open("id_rsa", "w+") as f:
+            f.write(self.private_key)
+
+        with open("id_rsa.pub", "w+") as f:
+            f.write(self.public_key)
 
     def get_balance(self):
         res = 0
@@ -496,13 +529,15 @@ class Transaction:
         line = self.sender + self.recipient + \
             str(self.value) + str(self.sequence)
 
+        if self.inputs is not None:
+            for inp in self.inputs:
+                line += str(inp.output_id)
+
         return Block.get_hash(line)
 
-    # TODO: line to self.data but with inputs
     def generate_signature(self, private_key):
-        # line = self.sender.to_pem() + self.recipient.to_pem() + bytearray(self.value)
         line = (self.sender + self.recipient + str(self.value)).encode()
-        sk = SigningKey.from_string(private_key.to_string(), curve=NIST256p)
+        sk = SigningKey.from_pem(private_key.encode())
         self.signature = sk.sign(line).hex()
         return self.signature
 
@@ -588,6 +623,7 @@ def full_chain():
         'UTO': chain.UTO,
         'BlockChain': chain.chain,
         'Length': len(chain.chain),
+        'Waiting': chain.waiting_transactions,
     }
     return jsonify(response), 200
 
@@ -601,9 +637,20 @@ def balance():
 
 @app.route('/validity', methods=['GET'])
 def verify_chain():
-    if BlockChain.check_validity(chain) is True:
+    if BlockChain.check_validity(chain)[0] is True:
         return "The chain is valid"
     return "The chain is corrupted"
+
+
+def broadcast_tx(tx):
+    global my_addr, port
+    query = {
+        'new_tx': tx,
+    }
+    for node in chain.nodes:
+        data = jsonify(query).data.decode('utf-8')
+        test = json.dumps(query, cls=MyJSONEncoder)
+        requests.post('http://' + node + '/nodes/new_tx', data=json.dumps(query, cls=MyJSONEncoder), headers={'Content-Type': 'application/json'})
 
 
 @app.route('/transactions/new', methods=['POST'])
@@ -619,10 +666,34 @@ def new_transaction():
         return "Not enough money"
 
     chain.waiting_transactions.append(tx)
-
+    broadcast_tx(tx)
     response = {'message': f'Transaction will be added to some block'}
 
     return jsonify(response), 201
+
+
+@app.route('/nodes/new_tx', methods=['POST'])
+def waiting_tx():
+    values = request.get_json()
+    new_tx = values.get('new_tx')
+    if new_tx is None:
+        return "Error: Please supply a valid transaction", 400
+
+    new_tx = Deserializer.parse_transactions(new_tx)
+
+    if new_tx not in chain.waiting_transactions:
+        chain.waiting_transactions.append(new_tx)
+
+    return "ok", 200
+
+
+def broadcast_chain():
+    global my_addr, port
+    query = {
+        'node': my_addr + ':' + str(port),
+    }
+    for node in chain.nodes:
+        requests.post('http://' + node + '/nodes/update_chain', json=query)
 
 
 @app.route('/mine', methods=['GET'])
@@ -634,15 +705,16 @@ def mine():
     if len(chain.waiting_transactions) == 0:
         return "Sorry, nothing to mine"
 
-    for tx in chain.waiting_transactions:
-        new_block.add_transaction(tx)
-        chain.waiting_transactions.remove(tx)
+    new_block.add_transaction(chain.waiting_transactions[0])
+    chain.waiting_transactions.pop(0)
 
     new_block.coinbase_tx = CoinbaseTransaction(user_wallet.public_key, 1, new_block.hash)
     new_block.coinbase_tx.process_transaction()
     new_block.mine_block(chain.difficulty)
-    # should be a sort of broadcast
+
     chain.add_to_chain(new_block)
+
+    broadcast_chain()
 
     return "you mined!"
 
@@ -672,14 +744,9 @@ def unregister_nodes():
     return "ok", 200
 
 
-@app.route('/node/broadcast', methods=['POST'])
-def broadcast_block():
-    pass
-
-
 @app.route('/nodes/resolve', methods=['GET'])
 def consensus():
-    replaced = chain.resolve_conflicts()
+    replaced = chain.resolve_conflicts(chain.nodes)
 
     if replaced:
         response = {
@@ -695,11 +762,42 @@ def consensus():
     return jsonify(response), 200
 
 
+@app.route('/nodes/update_chain', methods=['POST'])
+def consensus_one_node():
+    values = request.get_json()
+
+    node = values.get('node')
+
+    if node is None:
+        return "Error: Please supply a validlist of nodes", 400
+
+    if node not in chain.nodes:
+        chain.nodes.append(node)
+
+    replaced = chain.resolve_conflicts([node])
+
+    if replaced:
+        response = {
+            'message': 'Our chain was replaced',
+            'new_chain': chain.chain
+        }
+    else:
+        response = {
+            'message': 'Our chain is authoritative',
+            'chain': chain.chain
+        }
+
+    return jsonify(response), 200
+
+
+my_addr = 0
+
+
 class AsyncTask(threading.Thread):
     def __init__(self, server):
         super().__init__()
         self.server = 'http://' + str(server)
-
+        global my_addr
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
             my_addr = s.getsockname()[0]
