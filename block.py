@@ -1,6 +1,5 @@
 import hashlib
 import socket
-import sys
 import threading
 import time
 from urllib.parse import urlparse
@@ -17,6 +16,55 @@ from optparse import OptionParser
 
 app = Flask(__name__)
 node_identifier = str(uuid4()).replace('-', '')
+
+
+class MyJSONEncoder(JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, TransactionOutput):
+            return {
+                'recipient': obj.recipient,
+                'value': obj.value,
+                'parent_transaction_id': obj.parent_transaction_id,
+                'id': obj.id
+            }
+        if isinstance(obj, Block):
+            return {
+                'prev_hash': obj.prev_hash,
+                'timestamp': obj.timestamp,
+                'transactions': obj.transactions,
+                'merkle_root': obj.merkle_root,
+                'hash': obj.hash,
+                'nonce': obj.nonce,
+                'coinbase_tx': obj.coinbase_tx,
+            }
+        if isinstance(obj, Transaction):
+            return {
+                'sender': obj.sender,
+                'recipient': obj.recipient,
+                'value': obj.value,
+                'inputs': obj.inputs,
+                'signature': obj.signature,
+                'outputs': obj.outputs,
+                'sequence': obj.sequence,
+                'id': obj.id,
+            }
+        if isinstance(obj, CoinbaseTransaction):
+            return {
+                'recipient': obj.recipient,
+                'value': obj.value,
+                'block_hash': obj.block_hash,
+                'output': obj.output,
+                'sequence': obj.sequence,
+            }
+        if isinstance(obj, TransactionInput):
+            return {
+                'output_id': obj.output_id,
+                'UTO': obj.UTO,
+            }
+        return super(MyJSONEncoder, self).default(obj)
+
+
+app.json_encoder = MyJSONEncoder
 
 
 class Deserializer:
@@ -43,7 +91,19 @@ class Deserializer:
             if tx is not None:
                 res_block.transactions.append(Deserializer.parse_transactions(tx))
 
+        res_block.coinbase_tx = Deserializer.parse_coinbase(block_json['coinbase_tx'])
+
         return res_block
+
+    @staticmethod
+    def parse_coinbase(tx):
+        if tx is None:
+            return None
+        
+        res = CoinbaseTransaction(tx['recipient'], tx['value'], tx['block_hash'])
+        res.output = Deserializer.parse_transaction_output(tx['output'])
+        res.sequence = tx['sequence']
+        return res
 
     @staticmethod
     def parse_transactions(tx):
@@ -74,14 +134,14 @@ class Deserializer:
 
     @staticmethod
     def parse_transaction_input(tx):
-        outputs = list()
+        # outputs = list()
         res = TransactionInput(tx['output_id'])
 
         if tx['UTO'] is None:
             return res
 
-        outputs.append(Deserializer.parse_transaction_output(tx['UTO']))
-
+        # outputs.append(Deserializer.parse_transaction_output(tx['UTO']))
+        res.UTO = Deserializer.parse_transaction_output(tx['UTO'])
         return res
 
 
@@ -112,6 +172,7 @@ class Block:
     # transactions
     # nonce
     # merkle_root
+    # coinbase tx
 
     def __init__(self, prev_hash):
         self.prev_hash = prev_hash
@@ -122,6 +183,8 @@ class Block:
 
         self.nonce = 0
         self.hash = self._block_hash()
+
+        self.coinbase_tx = None
 
     def _block_hash(self):
         line = self.prev_hash + str(self.timestamp) + str(self.nonce) + self.merkle_root
@@ -169,6 +232,7 @@ class Block:
             tmp_hash = self._block_hash()
 
         self.hash = tmp_hash
+        self.coinbase_tx.block_hash = self.hash
         print("Successfully mined {0}".format(tmp_hash))
 
     def add_transaction(self, transaction):
@@ -203,19 +267,12 @@ class BlockChain:
     def add_to_chain(self, block):
         self.chain.append(block)
 
-    # TODO: maybe print to json?
-    def print_chain(self):
-        for block in self.chain:
-            print("-------")
-            block.print_block()
-            print("-------")
-
     def get_last(self):
         return self.chain[-1]
 
     def register_node(self, address):
         parsed_url = urlparse(address)
-        self.nodes.append(parsed_url.netloc)
+        self.nodes.append(parsed_url.path)
 
     def resolve_conflicts(self):
         new_chain = None
@@ -231,6 +288,9 @@ class BlockChain:
                 tmp_chain_json = response.json()['BlockChain']
                 tmp_chain = Deserializer.parse_chain(tmp_chain_json)
 
+                if len(tmp_chain) == 0:
+                    continue
+
                 tmp_UTO_json = response.json()['UTO']
                 tmp_UTO = dict()
 
@@ -240,7 +300,8 @@ class BlockChain:
                 possible_chain = self
                 possible_chain.chain = tmp_chain
                 possible_chain.UTO = tmp_UTO
-                possible_chain.gen_tx = Deserializer.parse_transactions(tmp_gen_tx)
+                if tmp_gen_tx is not None:
+                    possible_chain.gen_tx = Deserializer.parse_transactions(tmp_gen_tx)
 
                 if length > max_len and BlockChain.check_validity(possible_chain):
                     max_len = length
@@ -277,20 +338,26 @@ class BlockChain:
                 print("A block is not mined")
                 return False
 
+            if curr_block.coinbase_tx.block_hash != curr_block.hash:
+                print("Wrong coinbase")
+                return False
+
+            tmp_UTO[curr_block.coinbase_tx.output.id] = curr_block.coinbase_tx.output
+
             for tx in curr_block.transactions:
                 if not tx.verify_signature():
                     print("Transaction with wrong signature")
                     return tx
 
                 for tx_input in tx.inputs:
-                    if tx_input.output_id in tmp_UTO:
-                        tmp_UTO.pop(tx_input.output_id)
-                        # print("Input transaction is missing ", tx_input.output_id)
-                        # return False
-                    # print(tx_input.output_id)
-                    # if tx_input.UTO.value != tmp_UTO[tx_input.output_id].value:
-                    #     print("Invalid input transaction value")
-                    #     return False
+                    if tx_input.output_id not in tmp_UTO:
+                        print("Input transaction is missing ", tx_input.output_id)
+                        return False
+                    print(tx_input.output_id)
+                    if tx_input.UTO.value != tmp_UTO[tx_input.output_id].value:
+                        print("Invalid input transaction value")
+                        return False
+                    tmp_UTO.pop(tx_input.output_id)
 
                 for tx_output in tx.outputs:
                     tmp_UTO[tx_output.id] = tx_output
@@ -378,6 +445,29 @@ class TransactionInput:
         self.UTO = None
 
 
+class CoinbaseTransaction:
+
+    def __init__(self, recipient, value, block_hash):
+        self.recipient = recipient
+        self.value = value
+        self.block_hash = block_hash
+        self.output = None
+        self.sequence = 0
+
+    def __calculate_hash(self):
+        self.sequence += 1
+        line = self.recipient + \
+            str(self.value) + str(self.sequence)
+
+        return Block.get_hash(line)
+
+    def process_transaction(self):
+        tx_id = self.__calculate_hash()
+        self.output = TransactionOutput(self.recipient, self.value, tx_id)
+        BlockChain.UTO[self.output.id] = self.output
+        return True
+
+
 class Transaction:
     # id
     # sender
@@ -403,9 +493,6 @@ class Transaction:
     # TODO: remove get hash from Block class
     def __calculate_hash(self):
         self.sequence += 1
-        # line = self.sender.to_pem().decode('utf-8') + \
-        #     self.recipient.to_pem().decode('utf-8') + \
-        #     str(self.value) + str(self.sequence)
         line = self.sender + self.recipient + \
             str(self.value) + str(self.sequence)
 
@@ -461,43 +548,6 @@ class Transaction:
                 BlockChain.UTO.pop(tx.output_id)
 
         return True
-
-
-class MyJSONEncoder(JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, TransactionOutput):
-            return {
-                'recipient': obj.recipient,
-                'value': obj.value,
-                'parent_transaction_id': obj.parent_transaction_id,
-                'id': obj.id
-            }
-        if isinstance(obj, Block):
-            return {
-                'prev_hash': obj.prev_hash,
-                'timestamp': obj.timestamp,
-                'transactions': obj.transactions,
-                'merkle_root': obj.merkle_root,
-                'hash': obj.hash,
-                'nonce': obj.nonce,
-            }
-        if isinstance(obj, Transaction):
-            return {
-                'sender': obj.sender,
-                'recipient': obj.recipient,
-                'value': obj.value,
-                'inputs': obj.inputs,
-                'signature': obj.signature,
-                'outputs': obj.outputs,
-                'sequence': obj.sequence,
-                'id': obj.id,
-            }
-        if isinstance(obj, TransactionInput):
-            return {
-                'output_id': obj.output_id,
-                'UTO': obj.UTO,
-            }
-        return super(MyJSONEncoder, self).default(obj)
 
 
 user_wallet = Wallet()
@@ -588,18 +638,12 @@ def mine():
         new_block.add_transaction(tx)
         chain.waiting_transactions.remove(tx)
 
-    motive_tx = Transaction(gen_wallet.public_key,
-                            user_wallet.public_key, 1, None, mine_seq)
-    mine_seq += 1
-    motive_tx.generate_signature(gen_wallet.private_key)
-    motive_tx.outputs.append(TransactionOutput(motive_tx.recipient, motive_tx.value, gen_tx.id))
-    BlockChain.UTO[motive_tx.outputs[0].id] = motive_tx.outputs[0]
-    # new_block.add_transaction(motive_tx)
+    new_block.coinbase_tx = CoinbaseTransaction(user_wallet.public_key, 1, new_block.hash)
+    new_block.coinbase_tx.process_transaction()
     new_block.mine_block(chain.difficulty)
     # should be a sort of broadcast
-    print(new_block)
     chain.add_to_chain(new_block)
-    print(len(chain.chain))
+
     return "you mined!"
 
 
@@ -625,14 +669,12 @@ def unregister_nodes():
 
     chain.chain.remove(node)
 
-    response = {
-        'message': 'The node has been removed',
-        'removed_node': node,
-    }
-    return jsonify(response), 200
+    return "ok", 200
 
 
-app.json_encoder = MyJSONEncoder
+@app.route('/node/broadcast', methods=['POST'])
+def broadcast_block():
+    pass
 
 
 @app.route('/nodes/resolve', methods=['GET'])
@@ -697,11 +739,13 @@ def start_app():
 if __name__ == "__main__":
     parser = OptionParser()
     parser.add_option("-s", "--server", help="server address", dest='server')
+    parser.add_option("-m", "--master", help="am i master-node", dest='master')
     options, args = parser.parse_args()
     if options.server is None:
         print('Not enough args')
     server_addr = options.server
-    init()
+    if options.master is not None:
+        init()
     threading.Thread(target=start_app).start()
     threading.Thread(target=register_myself, args=(server_addr,)).start()
 

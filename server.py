@@ -24,10 +24,29 @@ def broadcast_new(new_node):
         query = {
             'node': new_node,
         }
-        response = requests.post(f'http://{addr}/node/register', query)
 
-        if response != 200:
+        if new_node == addr:
+            continue
+
+        response = requests.post(f'http://{addr}/node/register', json=query)
+
+        if response.status_code != 200:
             broadcast_delete(addr)
+
+
+def broadcast_to_new(new_node):
+    for addr in local_nodes:
+        query = {
+            'node': addr,
+        }
+
+        if new_node == addr:
+            continue
+
+        response = requests.post(f'http://{new_node}/node/register', json=query)
+
+        if response.status_code != 200:
+            broadcast_delete(new_node)
 
 
 @app.route('/new', methods=['POST'])
@@ -41,7 +60,7 @@ def new_node():
 
     parsed_url = urlparse(node)
     broadcast_new(parsed_url.netloc)
-
+    broadcast_to_new(parsed_url.netloc)
     local_nodes[parsed_url.netloc] = public_key
     response = {
         'message': 'registered',
@@ -49,7 +68,7 @@ def new_node():
     return jsonify(response), 201
 
 
-@app.route('/exit', methods=['POST'])
+@app.route('/remove', methods=['POST'])
 def remove_node():
     values = request.get_json()
 
@@ -59,9 +78,9 @@ def remove_node():
 
     parsed_url = urlparse(node)
 
-    if parsed_url in local_nodes:
-        local_nodes.pop(parsed_url)
-        broadcast_delete(parsed_url)
+    if parsed_url.netloc in local_nodes:
+        local_nodes.pop(parsed_url.netloc)
+        broadcast_delete(parsed_url.netloc)
 
     return "ok", 200
 
