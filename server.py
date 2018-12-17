@@ -16,7 +16,10 @@ def broadcast_delete(broken_node):
             'node': broken_node,
         }
 
-        requests.post(f'http://{addr}/node/unregister', query)
+        try:
+            requests.post(f'http://{addr}/node/unregister', query)
+        except:
+            continue
 
 
 def broadcast_new(new_node):
@@ -28,9 +31,9 @@ def broadcast_new(new_node):
         if new_node == addr:
             continue
 
-        response = requests.post(f'http://{addr}/node/register', json=query)
-
-        if response.status_code != 200:
+        try:
+            response = requests.post(f'http://{addr}/node/register', json=query)
+        except:
             broadcast_delete(addr)
 
 
@@ -43,9 +46,9 @@ def broadcast_to_new(new_node):
         if new_node == addr:
             continue
 
-        response = requests.post(f'http://{new_node}/node/register', json=query)
-
-        if response.status_code != 200:
+        try:
+            requests.post(f'http://{new_node}/node/register', json=query)
+        except:
             broadcast_delete(new_node)
 
 

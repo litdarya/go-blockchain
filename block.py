@@ -1,24 +1,35 @@
 import hashlib
 import json
+import os
 import socket
+import sys
 import threading
 import time
+from optparse import OptionParser
 from urllib.parse import urlparse
 from uuid import uuid4
 
 import requests
-from ecdsa import NIST256p
-from ecdsa import SigningKey
+from ecdsa import SigningKey, NIST256p
 from ecdsa import VerifyingKey
 from flask import Flask, jsonify, request
 from flask.json import JSONEncoder
-from optparse import OptionParser
-
-import os.path
-
 
 app = Flask(__name__)
 node_identifier = str(uuid4()).replace('-', '')
+
+
+class SshPair:
+
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def get_public_private():
+        private_key = SigningKey.generate(curve=NIST256p)
+        public_key = private_key.get_verifying_key()
+
+        return private_key.to_pem().decode('utf-8'), public_key.to_pem().decode('utf-8')
 
 
 class MyJSONEncoder(JSONEncoder):
@@ -146,19 +157,6 @@ class Deserializer:
         return res
 
 
-class SshPair:
-
-    def __init__(self):
-        pass
-
-    @staticmethod
-    def get_public_private():
-        private_key = SigningKey.generate(curve=NIST256p)
-        public_key = private_key.get_verifying_key()
-
-        return private_key.to_pem().decode('utf-8'), public_key.to_pem().decode('utf-8')
-
-
 class Block:
     # timestamp
     # hash
@@ -248,13 +246,13 @@ class BlockChain:
     # nodes
     min_input = 0
     difficulty = 0
-    UTO = dict()
 
     def __init__(self, difficulty=2):
         self.chain = list()
         self.nodes = list()
         self.waiting_transactions = list()
         self.gen_tx = None
+        self.UTO = dict()
 
         BlockChain.difficulty = difficulty
 
@@ -262,6 +260,8 @@ class BlockChain:
         self.chain.append(block)
 
     def get_last(self):
+        if len(self.chain) == 0:
+            return None
         return self.chain[-1]
 
     def register_node(self, address):
@@ -281,7 +281,7 @@ class BlockChain:
         if new_chain is not None:
             self.chain = new_chain
             self.waiting_transactions = new_waiting
-            BlockChain.UTO = new_UTO
+            self.UTO = new_UTO
             return True
 
         return False
@@ -391,66 +391,6 @@ class BlockChain:
         return True, tmp_waiting
 
 
-class Wallet:
-    # public key
-    # private key
-    # UTO - unspent transactions of this owner
-
-    def __init__(self):
-        self.__generate_key_pair()
-        self.UTO = dict()
-
-    def __generate_key_pair(self):
-        if os.path.isfile('id_rsa') and os.path.isfile('id_rsa.pub'):
-            with open("id_rsa", "r") as f:
-                self.private_key = f.read()
-
-            with open("id_rsa.pub", "r") as f:
-                self.public_key = f.read()
-
-            return
-
-        self.private_key, self.public_key = SshPair.get_public_private()
-
-        with open("id_rsa", "w+") as f:
-            f.write(self.private_key)
-
-        with open("id_rsa.pub", "w+") as f:
-            f.write(self.public_key)
-
-    def get_balance(self):
-        res = 0
-        for tx in BlockChain.UTO.values():
-            if tx.my_coin(self.public_key):
-                self.UTO[tx.id] = tx
-                res += tx.value
-
-        return res
-
-    def send_money(self, recipient, value):
-        if self.get_balance() < value:
-            print("Can not send a transaction, not enough money")
-            return None
-
-        inputs = list()
-        money_sum = 0
-
-        for tx in self.UTO.values():
-            money_sum += tx.value
-            inputs.append(TransactionInput(tx.id))
-
-            if money_sum > value:
-                break
-
-        new_tx = Transaction(self.public_key, recipient, float(value), inputs)
-        new_tx.generate_signature(self.private_key)
-
-        for tx in inputs:
-            self.UTO.pop(tx.output_id)
-
-        return new_tx
-
-
 class TransactionOutput:
     # id
     # recipient
@@ -479,16 +419,16 @@ class TransactionInput:
 
 
 class CoinbaseTransaction:
+    sequence = 0
 
     def __init__(self, recipient, value, block_hash):
         self.recipient = recipient
         self.value = value
         self.block_hash = block_hash
         self.output = None
-        self.sequence = 0
 
     def __calculate_hash(self):
-        self.sequence += 1
+        CoinbaseTransaction.sequence += 1
         line = self.recipient + \
             str(self.value) + str(self.sequence)
 
@@ -497,7 +437,7 @@ class CoinbaseTransaction:
     def process_transaction(self):
         tx_id = self.__calculate_hash()
         self.output = TransactionOutput(self.recipient, self.value, tx_id)
-        BlockChain.UTO[self.output.id] = self.output
+        chain.UTO[self.output.id] = self.output
         return True
 
 
@@ -512,20 +452,20 @@ class Transaction:
     # outputs
 
     # sequence
+    sequence = 0
 
-    def __init__(self, sender, recipient, value, inputs, sequence=0):
+    def __init__(self, sender, recipient, value, inputs):
         self.sender = sender
         self.recipient = recipient
         self.value = value
         self.inputs = inputs
         self.signature = None
         self.outputs = list()
-        self.sequence = sequence
         self.id = self.__calculate_hash()
 
     # TODO: remove get hash from Block class
     def __calculate_hash(self):
-        self.sequence += 1
+        Transaction.sequence += 1
         line = self.sender + self.recipient + \
             str(self.value) + str(self.sequence)
 
@@ -563,7 +503,7 @@ class Transaction:
         if self.inputs is not None:
             # check if transaction is not spent
             for tx in self.inputs:
-                tx.UTO = BlockChain.UTO.get(tx.output_id)
+                tx.UTO = chain.UTO.get(tx.output_id)
 
         if self.get_tx_value() < BlockChain.min_input:
             print("Inputs value is too small")
@@ -576,30 +516,109 @@ class Transaction:
         self.outputs.append(TransactionOutput(self.sender, left, tx_id))
 
         for out_tx in self.outputs:
-            BlockChain.UTO[out_tx.id] = out_tx
+            chain.UTO[out_tx.id] = out_tx
 
         for tx in self.inputs:
             if tx.UTO is not None:
-                BlockChain.UTO.pop(tx.output_id)
+                chain.UTO.pop(tx.output_id)
 
         return True
 
 
+class Wallet:
+    # public key
+    # private key
+    # UTO - unspent transactions of this owner
+
+    def __init__(self):
+        self.__generate_key_pair()
+        self.__generate_signature()
+        self.UTO = dict()
+
+    def __generate_key_pair(self):
+        if os.path.isfile('id_rsa') and os.path.isfile('id_rsa.pub'):
+            with open("id_rsa", "r") as f:
+                self.private_key = f.read()
+
+            with open("id_rsa.pub", "r") as f:
+                self.public_key = f.read()
+
+            return
+
+        self.private_key, self.public_key = SshPair.get_public_private()
+
+        with open("id_rsa", "w+") as f:
+            f.write(self.private_key)
+
+        with open("id_rsa.pub", "w+") as f:
+            f.write(self.public_key)
+
+    def __generate_signature(self):
+        if os.path.isfile('my_sign_tx') :
+            with open("my_sign_tx", "r") as f:
+                self.signature = f.read()
+
+            return
+
+        line = self.public_key.encode()
+        sk = SigningKey.from_pem(self.private_key)
+        self.signature = sk.sign(line).hex()
+
+        with open("my_sign_tx", "w+") as f:
+            f.write(self.signature)
+
+    def verify(self, signature):
+        vk = VerifyingKey.from_pem(self.public_key)
+        return vk.verify(bytes.fromhex(signature), self.public_key.encode())
+
+    def get_balance(self):
+        res = 0
+        for tx in chain.UTO.values():
+            if tx.my_coin(self.public_key):
+                self.UTO[tx.id] = tx
+                res += tx.value
+
+        return res
+
+    def send_money(self, recipient, value):
+        if self.get_balance() < value:
+            print("Can not send a transaction, not enough money")
+            return None
+
+        inputs = list()
+        money_sum = 0
+
+        for tx in self.UTO.values():
+            money_sum += tx.value
+            inputs.append(TransactionInput(tx.id))
+
+            if money_sum > value:
+                break
+
+        new_tx = Transaction(self.public_key, recipient, float(value), inputs)
+        new_tx.generate_signature(self.private_key)
+
+        for tx in inputs:
+            self.UTO.pop(tx.output_id)
+
+        return new_tx
+
+
+chain = BlockChain()
 user_wallet = Wallet()
 gen_wallet = Wallet()
 gen_tx = None
-mine_seq = 0
-chain = BlockChain()
 
 
 def init():
-    global gen_tx
+    global gen_tx, user_wallet, gen_wallet
+
     gen_tx = Transaction(gen_wallet.public_key,
                          user_wallet.public_key, 100, None)
     gen_tx.generate_signature(gen_wallet.private_key)
     gen_tx.id = '0'
     gen_tx.outputs.append(TransactionOutput(gen_tx.recipient, gen_tx.value, gen_tx.id))
-    BlockChain.UTO[gen_tx.outputs[0].id] = gen_tx.outputs[0]
+    chain.UTO[gen_tx.outputs[0].id] = gen_tx.outputs[0]
 
     gen_block = Block('0')
     gen_block.add_transaction(gen_tx)
@@ -616,6 +635,13 @@ def name():
     return jsonify(response), 200
 
 
+@app.route('/balance', methods=['GET'])
+def balance():
+    res = user_wallet.get_balance()
+    line = "Your balance is " + str(res)
+    return line
+
+
 @app.route('/chain', methods=['GET'])
 def full_chain():
     response = {
@@ -628,16 +654,9 @@ def full_chain():
     return jsonify(response), 200
 
 
-@app.route('/balance', methods=['GET'])
-def balance():
-    res = user_wallet.get_balance()
-    line = "Your balance is " + str(res)
-    return line
-
-
 @app.route('/validity', methods=['GET'])
 def verify_chain():
-    if BlockChain.check_validity(chain)[0] is True:
+    if chain.check_validity(chain)[0] is True:
         return "The chain is valid"
     return "The chain is corrupted"
 
@@ -656,14 +675,17 @@ def broadcast_tx(tx):
 @app.route('/transactions/new', methods=['POST'])
 def new_transaction():
     values = request.get_json()
-    required = ['recipient', 'amount']
+    required = ['recipient', 'amount', 'signature']
 
     if not all(k in values for k in required):
-        return 'Missing values', 400
+        return "Missing values", 400
 
-    tx = user_wallet.send_money(values['recipient'], values['amount'])
+    if not user_wallet.verify(values['signature']):
+        return "Access denied", 400
+
+    tx = user_wallet.send_money(values['recipient'], float(values['amount']))
     if tx is None:
-        return "Not enough money"
+        return "Not enough money", 400
 
     chain.waiting_transactions.append(tx)
     broadcast_tx(tx)
@@ -693,12 +715,14 @@ def broadcast_chain():
         'node': my_addr + ':' + str(port),
     }
     for node in chain.nodes:
-        requests.post('http://' + node + '/nodes/update_chain', json=query)
+        try:
+            requests.post('http://' + node + '/nodes/update_chain', json=query)
+        except:
+            chain.nodes.remove(node)
 
 
 @app.route('/mine', methods=['GET'])
 def mine():
-    global mine_seq
     last_block = chain.get_last()
     new_block = Block(last_block.hash)
 
@@ -791,6 +815,7 @@ def consensus_one_node():
 
 
 my_addr = 0
+port = 5001
 
 
 class AsyncTask(threading.Thread):
@@ -813,15 +838,21 @@ class AsyncTask(threading.Thread):
             'node': self.my_addr + str(port),
             'public_key': user_wallet.public_key,
         }
-        requests.post(self.server + '/new', json=query)
+        try:
+            response = requests.post(self.server + '/new', json=query)
+
+            if response.status_code == 201:
+                try:
+                    requests.get(self.my_addr + str(port) + '/nodes/resolve')
+                except:
+                    print("Nodes are not available...")
+        except:
+            print("Server is not available...")
 
 
 def register_myself(server):
     async_task = AsyncTask(server)
     async_task.run()
-
-
-port = 5001
 
 
 def start_app():
@@ -841,9 +872,12 @@ if __name__ == "__main__":
     options, args = parser.parse_args()
     if options.server is None:
         print('Not enough args')
+        sys.exit(1)
+
     server_addr = options.server
     if options.master is not None:
         init()
+
     threading.Thread(target=start_app).start()
     threading.Thread(target=register_myself, args=(server_addr,)).start()
 
