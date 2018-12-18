@@ -669,7 +669,9 @@ def broadcast_tx(tx):
     for node in chain.nodes:
         data = jsonify(query).data.decode('utf-8')
         test = json.dumps(query, cls=MyJSONEncoder)
-        requests.post('http://' + node + '/nodes/new_tx', data=json.dumps(query, cls=MyJSONEncoder), headers={'Content-Type': 'application/json'})
+        requests.post('http://' + node + '/nodes/new_tx',
+                      data=json.dumps(query, cls=MyJSONEncoder),
+                      headers={'Content-Type': 'application/json'})
 
 
 @app.route('/transactions/new', methods=['POST'])
@@ -773,6 +775,7 @@ def consensus():
     replaced = chain.resolve_conflicts(chain.nodes)
 
     if replaced:
+        send_logs()
         response = {
             'message': 'Our chain was replaced',
             'new_chain': chain.chain
@@ -801,6 +804,7 @@ def consensus_one_node():
     replaced = chain.resolve_conflicts([node])
 
     if replaced:
+        send_logs()
         response = {
             'message': 'Our chain was replaced',
             'new_chain': chain.chain
@@ -865,6 +869,22 @@ def start_app():
         port += 5
 
 
+def send_logs():
+    query = {
+        'timestamp': time.time(),
+        'addr': my_addr,
+        'port': port,
+        'new_chain': chain.chain,
+    }
+
+    requests.post('http://' + server_addr + '/logs',
+                  data=json.dumps(query, cls=MyJSONEncoder),
+                  headers={'Content-Type': 'application/json'})
+
+
+server_addr = None
+
+
 if __name__ == "__main__":
     parser = OptionParser()
     parser.add_option("-s", "--server", help="server address", dest='server')
@@ -880,4 +900,5 @@ if __name__ == "__main__":
 
     threading.Thread(target=start_app).start()
     threading.Thread(target=register_myself, args=(server_addr,)).start()
+
 

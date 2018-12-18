@@ -35,5 +35,5 @@ if __name__ == "__main__":
     if options.amount is None or options.rec is None or options.port is None:
         print('Not enough args')
         sys.exit(1)
-
+    options.rec = options.rec.replace("\\n", "\n")
     main(options.port, options.rec, options.amount)

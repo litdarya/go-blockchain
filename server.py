@@ -4,6 +4,10 @@ import requests
 from flask import Flask, jsonify, request
 from uuid import uuid4
 
+import tempfile
+
+import os
+
 app = Flask(__name__)
 node_identifier = str(uuid4()).replace('-', '')
 
@@ -90,7 +94,15 @@ def remove_node():
 
 @app.route('/logs', methods=['POST'])
 def get_logs():
-    pass
+    if not os.path.exists('tmp_logs'):
+        os.makedirs('tmp_logs')
+
+    values = request.get_data()
+
+    tf = tempfile.NamedTemporaryFile(dir='tmp_logs')
+    with open(tf.name, 'w+') as f:
+        f.write(values.decode('utf-8'))
+    return "ok", 200
 
 
 @app.route('/getall', methods=['GET'])
