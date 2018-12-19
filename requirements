@@ -1,14 +1,6 @@
 ecdsa
 flask
-hashlib
-json
-optparse
-os
+optparse-pretty
 requests
-socket
-socket
-sys
-threading
-time
-urllib.parse
+threaded
 uuid
